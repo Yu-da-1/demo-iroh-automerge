@@ -16,7 +16,9 @@ mod protocol;
 #[command(version, about, long_about = None)]
 struct Cli {
     #[clap(long)]
-    remote_id: Option<iroh::net::NodeId>,
+    remote_id: Option<iroh::net::NodeId>, // クライアントが接続するノード
+    #[clap(long)]
+    peer_id: Option<iroh::net::NodeId>, // state nodeの接続用
 }
 
 ///use tokio runtime and 非同期処理を行うためのアトリビュート
@@ -43,6 +45,33 @@ async fn main() -> Result<()> {
     //nodeアドレス取得と表示
     let addr = iroh.node_addr().await?;
     println!("Running\nNode Id: {}", addr.node_id,);
+
+    // node間の接続を確立(stateの管理)
+    if let Some(peer_id) = opts.peer_id {
+        let peer_addr = iroh::net::NodeAddr::new(peer_id);
+        loop {
+            match iroh.endpoint().connect(peer_addr.clone(), IrohAutomergeProtocol::ALPN).await {
+                Ok(conn) => {
+                    if let Err(e) = automerge.clone().initiate_sync(conn).await {
+                        println!("Sync error: {:?}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    } else {
+                        println!("Sync with peer completed successfully.");
+                        break;
+                    }
+                },
+                Err(e) => {
+                    println!("Connection error with peer: {:?}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        }
+
+    }
+    let stdin = tokio_io::stdin();
+    let reader = TokioBufReader::new(stdin);
+    let mut lines = reader.lines();
 
     //プロバイダーモードとレシーバーモードの分岐
     if let Some(remote_id) = opts.remote_id {
@@ -71,7 +100,7 @@ async fn main() -> Result<()> {
 
                     // connect to the other node
                     let node_addr = iroh::net::NodeAddr::new(remote_id);
-                    let retry_count = 0;
+                    let mut retry_count = 0;
                     loop {
                         println!("Retry count: {}", retry_count);
                         match iroh.endpoint().connect(node_addr.clone(), IrohAutomergeProtocol::ALPN).await {
@@ -94,6 +123,7 @@ async fn main() -> Result<()> {
                                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
                             }
                         }
+                        retry_count +=1;
                     }
                 } else if key == Some("exit") {
                     break;
